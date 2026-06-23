@@ -1,0 +1,6 @@
+.DS_Store
+**/.DS_Store
+
+# Production models are loaded from R2. Keep these folders for local Vite development only.
+tts-model/
+asr-model/
