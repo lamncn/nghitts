@@ -1,8 +1,14 @@
+import { USE_REMOTE_VI_TTS, VI_TTS_MODEL_IDS } from '../config/vi-models.js';
+
 /**
  * Fetches available TTS models from Cloudflare R2 via Pages Function
  * @returns {Promise<string[]>} Array of model names
  */
 export async function fetchAvailableModels() {
+  if (USE_REMOTE_VI_TTS) {
+    return [...VI_TTS_MODEL_IDS];
+  }
+
   try {
     const response = await fetch('/api/models');
     
@@ -22,4 +28,3 @@ export async function fetchAvailableModels() {
     throw error;
   }
 }
-

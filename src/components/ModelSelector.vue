@@ -8,6 +8,11 @@ const props = defineProps({
     type: String,
     required: false,
     default: "None"
+  },
+  modelLabels: {
+    type: Object,
+    required: false,
+    default: () => ({})
   }
 });
 
@@ -32,7 +37,7 @@ const handleModelChange = (event) => {
         :key="model" 
         :value="model"
       >
-        {{ model }}
+        {{ modelLabels[model] || model }}
       </option>
     </select>
     <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
@@ -42,4 +47,3 @@ const handleModelChange = (event) => {
     </div>
   </div>
 </template>
-

@@ -137,8 +137,15 @@ export async function cachedFetch(url) {
   
   // Try to get from cache first
   const cached = await cache.get(url);
+
+  // Model URLs are served with immutable cache headers. Returning a valid
+  // IndexedDB entry here avoids downloading the full model on every WebView
+  // launch. Entries expire after seven days in ModelCache.get().
+  if (cached) {
+    return new Response(cached.data, { status: 200 });
+  }
   
-  // Fetch from network to check if content has changed
+  // Nothing cached (or the entry expired), so fetch and persist it.
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);
@@ -150,24 +157,7 @@ export async function cachedFetch(url) {
   // Calculate hash of the new content
   const newContentHash = await cache.calculateContentHash(data);
   
-  // Check if we have cached data and if content has changed
-  if (cached) {
-    if (cached.contentHash === newContentHash) {
-      // Content is the same - use cached version
-      return new Response(cached.data, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
-      });
-    } else {
-      // Content has changed - update cache with new content
-      console.log(`🔄 Model file changed: ${url} - updating cache`);
-      await cache.set(url, data, newContentHash);
-    }
-  } else {
-    // No cache - store new content
-    await cache.set(url, data, newContentHash);
-  }
+  await cache.set(url, data, newContentHash);
   
   // Return the new response with the data
   return new Response(data, {
