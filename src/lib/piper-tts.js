@@ -363,8 +363,10 @@ export class PiperTTS {
             const phonemeIds = await this.phonemesToIds(textPhonemes);
 
             if (phonemeIds.length < 5) {
+              const skippedText =
+                text.length > 200 ? `${text.slice(0, 200)}…` : text;
               console.warn(
-                `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes.`,
+                `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
               );
               continue;
             }

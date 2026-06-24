@@ -200,8 +200,10 @@ export class PiperTTS {
             const phonemeIds = this.phonemesToIds(textPhonemes);
 
             if (phonemeIds.length < 5) {
+              const skippedText =
+                text.length > 200 ? `${text.slice(0, 200)}…` : text;
               console.warn(
-                "Skipped a TTS chunk because it has no model-supported phonemes.",
+                `Skipped a TTS chunk because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
               );
               continue;
             }
