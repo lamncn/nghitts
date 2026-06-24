@@ -205,6 +205,10 @@ export class PiperTTS {
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = this.phonemesToIds(textPhonemes);
 
+            if (phonemeIds.length === 0) {
+              continue;
+            }
+
             const ort = await import("onnxruntime-web");
 
             const inputs = {

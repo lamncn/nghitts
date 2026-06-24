@@ -367,6 +367,13 @@ export class PiperTTS {
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = await this.phonemesToIds(textPhonemes);
 
+            if (phonemeIds.length === 0) {
+              if (isDebugEnabled(config)) {
+                console.log(`[CHUNK ${chunkIdx}] Skipped because phoneme sequence is empty.`);
+              }
+              continue;
+            }
+
             // Prepare tensors for Piper model
             const ort = await import("onnxruntime-web");
 
