@@ -14,7 +14,10 @@ https://<your-domain>/?embed=1&model=ngocngan3701
 
 - `embed=1` keeps the Vue page mounted but hides the website UI.
 - `model` must be the model file name without `.onnx`.
+- Without `model`, embed mode waits for Flutter to call `loadModel()` and does
+  not download the website's default model.
 - Wait for the `model_ready` event before requesting synthesis.
+- `bridge_ready` is emitted only after the model catalogue is ready.
 
 The page emits JSON strings through `window.FlutterTTS.postMessage(...)`.
 
@@ -28,11 +31,13 @@ window.NghiTTS.synthesize({
   text: "Xin chao, day la ban thu giong noi.",
   voice: 0,
   speed: 1.0,
+  ackAudioChunks: true,
 });
 window.NghiTTS.stop({
   requestId: "request-123",
   reloadModel: true,
 });
+window.NghiTTS.ackAudioChunk("request-123", 0);
 ```
 
 `synthesize` returns an object with `accepted`, `requestId`, and `model`.
@@ -96,8 +101,14 @@ Each `audio_chunk` contains:
 }
 ```
 
-Store chunks by `index`, base64-decode them, concatenate the decoded bytes, and
-write the result as the `.wav` file named by the `complete` event.
+Set `ackAudioChunks: true`, store each chunk by `index`, then immediately acknowledge it with
+`ackAudioChunk(requestId, index)`. The bridge sends only one unacknowledged
+chunk at a time and fails the transfer after 30 seconds without an ACK. After
+the `complete` event, concatenate the decoded bytes and write the result as the
+`.wav` file named by that event.
+
+Clients that omit `ackAudioChunks` retain the bridge v2 fire-and-yield transfer
+for backwards compatibility.
 
 Errors use one of these codes:
 

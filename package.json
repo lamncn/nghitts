@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "format": "prettier --write piper-tts-web-demo",
+    "format": "prettier --write src docs vite.config.js package.json",
     "build": "vite build",
-    "lint": "eslint piper-tts-web-demo",
+    "lint": "eslint src vite.config.js",
+    "test": "node --test test/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "busboy": "^1.6.0",
     "eslint": "^9.33.0",
     "eslint-plugin-vue": "^10.4.0",
+    "globals": "^17.7.0",
     "prettier": "^3.6.2",
     "vite": "^7.1.1"
   }
