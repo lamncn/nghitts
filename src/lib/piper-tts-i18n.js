@@ -192,10 +192,17 @@ export class PiperTTS {
       noiseWScale = 0.8,
     } = options;
 
+    let chunkIdx = 0;
+
     for await (const text of textStreamer) {
       if (text.trim()) {
         try {
           if (this.session && this.voiceConfig) {
+            chunkIdx++;
+            console.info(
+              `[CHUNK ${chunkIdx}] Text (${text.length} chars): ${JSON.stringify(text)}`,
+            );
+
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = this.phonemesToIds(textPhonemes);
 
@@ -203,7 +210,7 @@ export class PiperTTS {
               const skippedText =
                 text.length > 200 ? `${text.slice(0, 200)}…` : text;
               console.warn(
-                `Skipped a TTS chunk because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
+                `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
               );
               continue;
             }

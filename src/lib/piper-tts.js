@@ -342,7 +342,6 @@ export class PiperTTS {
       noiseWScale = 0.8,
     } = options;
 
-    const config = await loadConfig();
     let chunkIdx = 0;
 
     // Process the text stream
@@ -352,11 +351,9 @@ export class PiperTTS {
           if (this.session && this.voiceConfig) {
             chunkIdx++;
 
-            if (isDebugEnabled(config)) {
-              console.log(
-                `[CHUNK ${chunkIdx}] Processing text: ${JSON.stringify(text)}`,
-              );
-            }
+            console.info(
+              `[CHUNK ${chunkIdx}] Text (${text.length} chars): ${JSON.stringify(text)}`,
+            );
 
             // Convert text to phonemes then to IDs
             const textPhonemes = await this.textToPhonemes(text);
