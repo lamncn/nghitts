@@ -174,6 +174,15 @@ export class PiperTTS {
       // Use local files in public directory with threading enabled
       ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnx-runtime/`;
 
+      // iOS WKWebView has SharedArrayBuffer defined, but it cannot be used
+      // because cross-origin isolation is not achieved. Attempting to use it
+      // causes a silent crash in the Worker.
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (isIOS || typeof SharedArrayBuffer === "undefined") {
+        ort.env.wasm.numThreads = 1;
+      }
+
       // Load model and config
       const [modelResponse, configResponse] = await Promise.all([
         cachedFetch(modelPath),
