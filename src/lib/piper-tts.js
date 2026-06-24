@@ -174,14 +174,6 @@ export class PiperTTS {
       // Use local files in public directory with threading enabled
       ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnx-runtime/`;
 
-      // iOS WKWebView does not support SharedArrayBuffer (required for WASM
-      // multi-threading) because it cannot achieve cross-origin isolation.
-      // Fall back to single-threaded mode so inference completes instead of
-      // hanging silently.
-      if (typeof SharedArrayBuffer === "undefined") {
-        ort.env.wasm.numThreads = 1;
-      }
-
       // Load model and config
       const [modelResponse, configResponse] = await Promise.all([
         cachedFetch(modelPath),
