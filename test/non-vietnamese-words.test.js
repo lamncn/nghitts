@@ -6,7 +6,7 @@ const vietnameseWords = [
   "long", "nghe", "song", "the", "sung", "dao", "kia", "say", "hong",
   "sen", "leo", "son", "ham", "dan", "chen", "khao", "tom", "sun",
   "sim", "sam", "day", "don", "den", "seo", "choi", "tong", "lin",
-  "hoe", "them", "bun", "hui", "pay", "ria", "dua", "peng", "seng",
+  "hoe", "them", "bun", "hui", "ria", "dua", "peng", "seng",
   "mom", "cheng", "toe", "roe", "huyn", "meng", "rui", "poe",
   "choong",
 ];

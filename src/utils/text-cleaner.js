@@ -432,6 +432,23 @@ export function cleanTextForTTS(text) {
 }
 
 /**
+ * Ensure punctuation is followed by whitespace before sentence chunking.
+ * Consecutive punctuation such as "..." or "?!" is kept as one cluster.
+ * Horizontal whitespace is collapsed while line breaks are preserved.
+ */
+export function normalizePunctuationSpacing(text) {
+  if (!text || typeof text !== "string") {
+    return "";
+  }
+
+  return text
+    .replace(/([.!?,;:]+)(?=[^\s.!?,;:])/gu, "$1 ")
+    .replace(/[^\S\r\n]+/g, " ")
+    .replace(/ *\r?\n */g, "\n")
+    .trim();
+}
+
+/**
  * Process text for TTS: clean text, process Vietnamese text, then replace non-Vietnamese words
  * This is the main function that should be called before chunking
  */
@@ -537,6 +554,10 @@ export async function processTextForTTS(text) {
       skipped: true,
     });
   }
+
+  // Normalize spacing only after number, URL/email and transliteration handling
+  // so punctuation inside those source formats is not altered prematurely.
+  processedText = normalizePunctuationSpacing(processedText);
 
   if (isDebugEnabled(config)) {
     debugLog(config, "Preprocessing Complete", {

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chunkText } from "../src/utils/text-cleaner.js";
+import {
+  chunkText,
+  normalizePunctuationSpacing,
+} from "../src/utils/text-cleaner.js";
 import { mergeAudioChunksToWav } from "../src/utils/wav.js";
 
 test("chunkText caps long sentences for mobile inference", async () => {
@@ -17,6 +20,24 @@ test("chunkText preserves normal sentence boundaries", async () => {
   const chunks = await chunkText("Câu thứ nhất. Câu thứ hai!");
 
   assert.deepEqual(chunks, ["Câu thứ nhất.", "Câu thứ hai!"]);
+});
+
+test("punctuation spacing separates sentences without flattening newlines", async () => {
+  const normalized = normalizePunctuationSpacing(
+    "thiếu niên.anh   trai...Em gái!\n  Được chứ?được.",
+  );
+
+  assert.equal(
+    normalized,
+    "thiếu niên. anh trai... Em gái!\nĐược chứ? được.",
+  );
+  assert.deepEqual(await chunkText(normalized), [
+    "thiếu niên.",
+    "anh trai...",
+    "Em gái!",
+    "Được chứ?",
+    "được.",
+  ]);
 });
 
 test("mergeAudioChunksToWav writes a valid PCM WAV", async () => {
