@@ -94,8 +94,17 @@ self.addEventListener("message", async (e) => {
       lengthScale,
     });
     const chunks = [];
+    const totalChunks = streamer.chunks.length;
+    let currentChunk = 0;
+
+    self.postMessage({
+      status: "generation_progress",
+      currentChunk: 0,
+      totalChunks,
+    });
 
     for await (const { text, audio } of stream) {
+      currentChunk += 1;
       if (!deliverToFlutter) {
         self.postMessage({
           status: "stream",
@@ -106,6 +115,11 @@ self.addEventListener("message", async (e) => {
         });
       }
       chunks.push(audio);
+      self.postMessage({
+        status: "generation_progress",
+        currentChunk,
+        totalChunks,
+      });
     }
 
     const audio = chunks.length > 0 ? mergeAudioChunksToWav(chunks) : null;

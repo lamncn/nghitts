@@ -748,6 +748,16 @@ const onMessageReceived = ({ data }) => {
         chunks.value = [...chunks.value, data.chunk];
       }
       break;
+    case "generation_progress":
+      if (pendingBridgeRequest) {
+        postBridgeEvent({
+          type: "generation_progress",
+          requestId: pendingBridgeRequest.requestId,
+          currentChunk: data.currentChunk,
+          totalChunks: data.totalChunks,
+        });
+      }
+      break;
     case "complete":
       status.value = "ready";
       {
