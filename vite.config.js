@@ -315,6 +315,7 @@ export default defineConfig({
     },
   ],
   resolve: {
+    conditions: ["onnxruntime-web-use-extern-wasm"],
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },

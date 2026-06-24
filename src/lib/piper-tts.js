@@ -164,10 +164,8 @@ export class PiperTTS {
 
   static async from_pretrained(modelPath, configPath) {
     try {
-      // Import ONNX Runtime Web and caching utility
-      // Use the default JSEP bundle. The deployed ONNX assets are the
-      // ort-wasm-simd-threaded.jsep.* pair, so the WASM-only entry point would
-      // try to load a non-JSEP module that does not exist in /onnx-runtime/.
+      // Use the default JSEP entry point because public/onnx-runtime contains
+      // the matching ort-wasm-simd-threaded.jsep.* runtime pair.
       const ort = await import("onnxruntime-web");
       const { cachedFetch } = await import("../utils/model-cache.js");
 
@@ -309,16 +307,22 @@ export class PiperTTS {
         );
       }
 
-      phonemeIds.push(idMap[BOS]);
-      phonemeIds.push(idMap[PAD]);
-
+      const sentenceIds = [];
       for (let phoneme of sentencePhonemes) {
         if (phoneme in idMap) {
-          phonemeIds.push(idMap[phoneme]);
-          phonemeIds.push(idMap[PAD]);
+          sentenceIds.push(idMap[phoneme]);
+          sentenceIds.push(idMap[PAD]);
         }
       }
 
+      // A phonemizer can legitimately return markers/characters that this
+      // particular model does not know. Do not build a [1, 0] ONNX tensor (or
+      // a boundary-only sequence) for such chunks.
+      if (sentenceIds.length === 0) continue;
+
+      phonemeIds.push(idMap[BOS]);
+      phonemeIds.push(idMap[PAD]);
+      phonemeIds.push(...sentenceIds);
       phonemeIds.push(idMap[EOS]);
     }
 
@@ -358,10 +362,10 @@ export class PiperTTS {
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = await this.phonemesToIds(textPhonemes);
 
-            if (phonemeIds.length === 0) {
-              if (isDebugEnabled(config)) {
-                console.log(`[CHUNK ${chunkIdx}] Skipped because phoneme sequence is empty.`);
-              }
+            if (phonemeIds.length < 5) {
+              console.warn(
+                `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes.`,
+              );
               continue;
             }
 

@@ -730,9 +730,11 @@ const onMessageReceived = ({ data }) => {
         clearInterval(worker.value._progressInterval);
       }
       loadingProgress.value = 0;
-      status.value = "error";
       error.value = data.data;
       if (pendingBridgeRequest) {
+        // A failed OrtRun does not unload the session. Keep the worker ready so
+        // the next chapter can continue instead of cascading MODEL_NOT_READY.
+        status.value = worker.value ? "ready" : "error";
         bridgeError(
           "GENERATION_FAILED",
           data.data,
@@ -740,6 +742,7 @@ const onMessageReceived = ({ data }) => {
         );
         pendingBridgeRequest = null;
       } else {
+        status.value = "error";
         bridgeError("MODEL_LOAD_FAILED", data.data);
       }
       break;

@@ -165,16 +165,19 @@ export class PiperTTS {
     let phonemeIds = [];
 
     for (const sentencePhonemes of textPhonemes) {
-      phonemeIds.push(idMap[BOS]);
-      phonemeIds.push(idMap[PAD]);
-
+      const sentenceIds = [];
       for (const phoneme of sentencePhonemes) {
         if (phoneme in idMap) {
-          phonemeIds.push(idMap[phoneme]);
-          phonemeIds.push(idMap[PAD]);
+          sentenceIds.push(idMap[phoneme]);
+          sentenceIds.push(idMap[PAD]);
         }
       }
 
+      if (sentenceIds.length === 0) continue;
+
+      phonemeIds.push(idMap[BOS]);
+      phonemeIds.push(idMap[PAD]);
+      phonemeIds.push(...sentenceIds);
       phonemeIds.push(idMap[EOS]);
     }
 
@@ -196,7 +199,10 @@ export class PiperTTS {
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = this.phonemesToIds(textPhonemes);
 
-            if (phonemeIds.length === 0) {
+            if (phonemeIds.length < 5) {
+              console.warn(
+                "Skipped a TTS chunk because it has no model-supported phonemes.",
+              );
               continue;
             }
 
@@ -242,10 +248,7 @@ export class PiperTTS {
           }
         } catch (error) {
           console.error("Error generating audio:", error);
-          yield {
-            text,
-            audio: new RawAudio(new Float32Array(22050), 22050),
-          };
+          throw error;
         }
       }
     }
