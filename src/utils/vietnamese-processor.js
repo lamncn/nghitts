@@ -954,8 +954,11 @@ function normalizePunctuation(text) {
  * Clean up extra whitespace
  */
 function cleanWhitespace(text) {
-    text = text.replace(/\s+/g, ' ');
-    return text.trim();
+    return text
+        // Collapse spaces/tabs without flattening paragraph boundaries.
+        .replace(/[^\S\r\n]+/g, ' ')
+        .replace(/ *\r?\n */g, '\n')
+        .trim();
 }
 
 /**
@@ -1040,4 +1043,3 @@ export { numberToWords, convertDecimal, convertPercentage, convertCurrency,
          convertTime, convertDate, convertYearRange, convertOrdinal, convertRomanNumerals,
          convertStandaloneNumbers, convertMeasurementUnits, convertPhoneNumber, normalizeUnicode,
          removeSpecialChars, normalizePunctuation, cleanWhitespace };
-

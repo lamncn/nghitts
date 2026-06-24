@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  cleanTextForTTS,
   chunkText,
   normalizePunctuationSpacing,
+  processTextForTTS,
 } from "../src/utils/text-cleaner.js";
 import { mergeAudioChunksToWav } from "../src/utils/wav.js";
 
@@ -38,6 +41,48 @@ test("punctuation spacing separates sentences without flattening newlines", asyn
     "Được chứ?",
     "được.",
   ]);
+});
+
+test("full preprocessing keeps line boundaries and prevents joined words", async () => {
+  const [foreignWords, acronyms] = await Promise.all([
+    readFile(new URL("../public/non-vietnamese-words.csv", import.meta.url)),
+    readFile(new URL("../public/acronyms.csv", import.meta.url)),
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/non-vietnamese-words.csv")) {
+      return new Response(foreignWords, { status: 200 });
+    }
+    if (url.endsWith("/acronyms.csv")) {
+      return new Response(acronyms, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  try {
+    const input = "dòng một\nanh—em\nxin…chào\nanh(em)\nanh😀em";
+    assert.equal(
+      cleanTextForTTS(input),
+      "dòng một\nanh em\nxin...chào\nanh em\nanh em",
+    );
+
+    const processed = await processTextForTTS(input);
+    assert.equal(
+      processed,
+      "dòng một\nanh em\nxin. chào\nanh em\nanh em",
+    );
+    assert.deepEqual(await chunkText(processed), [
+      "dòng một.",
+      "anh em.",
+      "xin.",
+      "chào.",
+      "anh em.",
+      "anh em.",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("mergeAudioChunksToWav writes a valid PCM WAV", async () => {
