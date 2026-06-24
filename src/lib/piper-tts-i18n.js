@@ -93,7 +93,9 @@ export class PiperTTS {
 
   static async from_pretrained(modelPath, configPath) {
     try {
-      const ort = await import("onnxruntime-web/wasm");
+      // Keep this entry point aligned with the deployed JSEP WASM assets in
+      // public/onnx-runtime. The /wasm entry point expects non-JSEP filenames.
+      const ort = await import("onnxruntime-web");
       const { cachedFetch } = await import("../utils/model-cache.js");
 
       ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnx-runtime/`;
@@ -194,7 +196,7 @@ export class PiperTTS {
             const textPhonemes = await this.textToPhonemes(text);
             const phonemeIds = this.phonemesToIds(textPhonemes);
 
-            const ort = await import("onnxruntime-web/wasm");
+            const ort = await import("onnxruntime-web");
 
             const inputs = {
               input: new ort.Tensor(

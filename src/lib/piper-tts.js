@@ -165,7 +165,10 @@ export class PiperTTS {
   static async from_pretrained(modelPath, configPath) {
     try {
       // Import ONNX Runtime Web and caching utility
-      const ort = await import("onnxruntime-web/wasm");
+      // Use the default JSEP bundle. The deployed ONNX assets are the
+      // ort-wasm-simd-threaded.jsep.* pair, so the WASM-only entry point would
+      // try to load a non-JSEP module that does not exist in /onnx-runtime/.
+      const ort = await import("onnxruntime-web");
       const { cachedFetch } = await import("../utils/model-cache.js");
 
       // Use local files in public directory with threading enabled
@@ -356,7 +359,7 @@ export class PiperTTS {
             const phonemeIds = await this.phonemesToIds(textPhonemes);
 
             // Prepare tensors for Piper model
-            const ort = await import("onnxruntime-web/wasm");
+            const ort = await import("onnxruntime-web");
 
             const inputs = {
               input: new ort.Tensor(
