@@ -552,6 +552,11 @@ const restartWorker = (modelName = null) => {
   });
 
   const modelToLoad = modelName || selectedModel.value;
+  postBridgeEvent({
+    type: "model_phase",
+    phase: "worker_create_done",
+    model: modelToLoad,
+  });
   postBridgeEvent({ type: "model_loading", model: modelToLoad });
   nextWorker.postMessage({ type: "init", model: modelToLoad });
 
@@ -709,6 +714,13 @@ const handleModelChange = (modelName) => {
 // Worker message handlers
 const onMessageReceived = ({ data }) => {
   switch (data.status) {
+    case "load_progress":
+      postBridgeEvent({
+        type: "model_phase",
+        model: selectedModel.value,
+        ...data,
+      });
+      break;
     case "ready":
       if (worker.value?._progressInterval) {
         clearInterval(worker.value._progressInterval);
@@ -749,6 +761,15 @@ const onMessageReceived = ({ data }) => {
     case "stream":
       if (!pendingBridgeRequest?.deliverToFlutter) {
         chunks.value = [...chunks.value, data.chunk];
+      }
+      break;
+    case "tts_phase":
+      if (pendingBridgeRequest || data.requestId) {
+        postBridgeEvent({
+          type: "tts_phase",
+          requestId: data.requestId || pendingBridgeRequest?.requestId,
+          ...data,
+        });
       }
       break;
     case "generation_progress":

@@ -162,28 +162,53 @@ export class PiperTTS {
     this.phonemeIdMap = null;
   }
 
-  static async from_pretrained(modelPath, configPath) {
+  static async from_pretrained(modelPath, configPath, options = {}) {
+    const report = (phase, details = {}) => {
+      options.onProgress?.({
+        phase,
+        ...details,
+      });
+    };
     try {
       // Use the default JSEP entry point because public/onnx-runtime contains
       // the matching ort-wasm-simd-threaded.jsep.* runtime pair.
+      report("runtime_import_start", { mode: "onnxruntime-web" });
       const ort = await import("onnxruntime-web");
+      report("runtime_import_done", { mode: "onnxruntime-web" });
+      report("cache_module_import_start");
       const { cachedFetch } = await import("../utils/model-cache.js");
+      report("cache_module_import_done");
 
       // Use local files in public directory with threading enabled
       ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnx-runtime/`;
+      report("wasm_paths_set", { mode: "wasm" });
 
       // Load model and config
+      report("model_fetch_start");
       const [modelResponse, configResponse] = await Promise.all([
-        cachedFetch(modelPath),
-        cachedFetch(configPath),
+        cachedFetch(modelPath, {
+          label: "model.onnx",
+          onProgress: (event) => report("model_file_" + event.phase, event),
+        }),
+        cachedFetch(configPath, {
+          label: "model.config",
+          onProgress: (event) => report("config_file_" + event.phase, event),
+        }),
       ]);
+      report("model_fetch_done");
 
+      report("model_decode_start");
       const [modelBuffer, voiceConfig] = await Promise.all([
         modelResponse.arrayBuffer(),
         configResponse.json(),
       ]);
+      report("model_decode_done", {
+        modelBytes: modelBuffer.byteLength,
+        sampleRate: voiceConfig?.audio?.sample_rate,
+      });
 
       // Create ONNX session with WASM execution provider
+      report("session_create_start", { mode: "wasm" });
       const session = await ort.InferenceSession.create(modelBuffer, {
         executionProviders: [
           {
@@ -192,6 +217,7 @@ export class PiperTTS {
           },
         ],
       });
+      report("session_create_done", { mode: "wasm" });
 
       return new PiperTTS(voiceConfig, session);
     } catch (error) {
@@ -340,7 +366,14 @@ export class PiperTTS {
       lengthScale = 1.0,
       noiseScale = 0.667,
       noiseWScale = 0.8,
+      onProgress = null,
     } = options;
+    const report = (phase, details = {}) => {
+      onProgress?.({
+        phase,
+        ...details,
+      });
+    };
 
     let chunkIdx = 0;
 
@@ -354,10 +387,21 @@ export class PiperTTS {
             console.info(
               `[CHUNK ${chunkIdx}] Text (${text.length} chars): ${JSON.stringify(text)}`,
             );
+            report("chunk_start", {
+              chunkIndex: chunkIdx,
+              textLength: text.length,
+            });
 
             // Convert text to phonemes then to IDs
+            report("phonemize_start", { chunkIndex: chunkIdx });
             const textPhonemes = await this.textToPhonemes(text);
+            report("phonemize_done", { chunkIndex: chunkIdx });
+            report("phoneme_ids_start", { chunkIndex: chunkIdx });
             const phonemeIds = await this.phonemesToIds(textPhonemes);
+            report("phoneme_ids_done", {
+              chunkIndex: chunkIdx,
+              phonemeIds: phonemeIds.length,
+            });
 
             if (phonemeIds.length < 5) {
               const skippedText =
@@ -365,12 +409,22 @@ export class PiperTTS {
               console.warn(
                 `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
               );
+              report("chunk_no_audio", {
+                chunkIndex: chunkIdx,
+                phonemeIds: phonemeIds.length,
+              });
               continue;
             }
 
             // Prepare tensors for Piper model
+            report("runtime_import_start", { chunkIndex: chunkIdx });
             const ort = await import("onnxruntime-web");
+            report("runtime_import_done", { chunkIndex: chunkIdx });
 
+            report("tensor_create_start", {
+              chunkIndex: chunkIdx,
+              phonemeIds: phonemeIds.length,
+            });
             const inputs = {
               input: new ort.Tensor(
                 "int64",
@@ -400,8 +454,14 @@ export class PiperTTS {
             } else {
               // console.log('⚠️ Model has only 1 speaker - speaker ID ignored');
             }
+            report("tensor_create_done", { chunkIndex: chunkIdx });
 
+            report("inference_start", {
+              chunkIndex: chunkIdx,
+              phonemeIds: phonemeIds.length,
+            });
             const results = await this.session.run(inputs);
+            report("inference_done", { chunkIndex: chunkIdx });
 
             // Extract audio data
             const audioOutput = results.output;
@@ -412,6 +472,11 @@ export class PiperTTS {
 
             // Clean up audio data
             const finalAudioData = new Float32Array(audioData);
+            report("audio_ready", {
+              chunkIndex: chunkIdx,
+              sampleRate,
+              samples: finalAudioData.length,
+            });
 
             yield {
               text,

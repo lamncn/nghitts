@@ -4,6 +4,14 @@ import { mergeAudioChunksToWav } from "../utils/wav.js";
 
 let tts = null;
 
+function postPhase(status, phase, details = {}) {
+  self.postMessage({
+    status,
+    phase,
+    ...details,
+  });
+}
+
 // Initialize the model
 async function initializeModel(modelName = null) {
   try {
@@ -12,8 +20,26 @@ async function initializeModel(modelName = null) {
     const model = modelName || defaultModel;
     const modelPath = getVietnameseModelUrl(model, ".onnx");
     const configPath = getVietnameseModelUrl(model, ".onnx.json");
+    const startedAt = Date.now();
 
-    tts = await PiperTTS.from_pretrained(modelPath, configPath);
+    postPhase("load_progress", "init_start", {
+      model,
+      modelPath,
+      configPath,
+    });
+    tts = await PiperTTS.from_pretrained(modelPath, configPath, {
+      onProgress: (event) => {
+        postPhase("load_progress", event.phase, {
+          model,
+          elapsedMs: Date.now() - startedAt,
+          ...event,
+        });
+      },
+    });
+    postPhase("load_progress", "init_done", {
+      model,
+      elapsedMs: Date.now() - startedAt,
+    });
 
     // Get available speakers
     const speakers = tts.getSpeakers();
@@ -83,15 +109,42 @@ self.addEventListener("message", async (e) => {
   }
 
   try {
+    const startedAt = Date.now();
+    postPhase("tts_phase", "text_split_start", {
+      requestId,
+      textLength: text?.length ?? 0,
+    });
     const streamer = new TextSplitterStream();
     await streamer.push(text);
     streamer.close();
+    postPhase("tts_phase", "text_split_done", {
+      requestId,
+      totalChunks: streamer.chunks.length,
+      elapsedMs: Date.now() - startedAt,
+    });
 
     const speakerId = typeof voice === "number" ? voice : parseInt(voice) || 0;
     const lengthScale = 1.0 / (speed || 1.0);
+    postPhase("tts_phase", "stream_create_start", {
+      requestId,
+      totalChunks: streamer.chunks.length,
+    });
     const stream = tts.stream(streamer, {
       speakerId,
       lengthScale,
+      onProgress: (event) => {
+        postPhase("tts_phase", event.phase, {
+          requestId,
+          totalChunks: streamer.chunks.length,
+          elapsedMs: Date.now() - startedAt,
+          ...event,
+        });
+      },
+    });
+    postPhase("tts_phase", "stream_create_done", {
+      requestId,
+      totalChunks: streamer.chunks.length,
+      elapsedMs: Date.now() - startedAt,
     });
     const chunks = [];
     const totalChunks = streamer.chunks.length;
@@ -115,6 +168,12 @@ self.addEventListener("message", async (e) => {
         });
       }
       chunks.push(audio);
+      postPhase("tts_phase", "chunk_done", {
+        requestId,
+        currentChunk,
+        totalChunks,
+        elapsedMs: Date.now() - startedAt,
+      });
       self.postMessage({
         status: "generation_progress",
         currentChunk,
@@ -122,7 +181,21 @@ self.addEventListener("message", async (e) => {
       });
     }
 
+    postPhase("tts_phase", "merge_audio_start", {
+      requestId,
+      totalChunks,
+      audioChunks: chunks.length,
+      elapsedMs: Date.now() - startedAt,
+    });
     const audio = chunks.length > 0 ? mergeAudioChunksToWav(chunks) : null;
+    postPhase("tts_phase", "merge_audio_done", {
+      requestId,
+      totalChunks,
+      audioChunks: chunks.length,
+      elapsedMs: Date.now() - startedAt,
+      hasAudio: Boolean(audio),
+      bytes: audio?.size ?? null,
+    });
     self.postMessage({ status: "complete", audio, requestId });
   } catch (error) {
     console.error("Error during TTS generation:", error);

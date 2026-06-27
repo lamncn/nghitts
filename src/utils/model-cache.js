@@ -137,16 +137,100 @@ class ModelCache {
   }
 }
 
+function cacheLogLabel(url, label) {
+  if (label) return label;
+  try {
+    return new URL(url, self.location.href).pathname.split("/").pop() || url;
+  } catch {
+    return url;
+  }
+}
+
+function concatChunks(chunks, totalBytes) {
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
+}
+
+async function readResponseWithProgress(response, report) {
+  const totalHeader = response.headers.get("content-length");
+  const totalBytes = totalHeader ? Number(totalHeader) : null;
+  const reader = response.body?.getReader?.();
+
+  if (!reader) {
+    const data = await response.arrayBuffer();
+    report("download_complete", {
+      loadedBytes: data.byteLength,
+      totalBytes: totalBytes || data.byteLength,
+      percent: 100,
+    });
+    return data;
+  }
+
+  const chunks = [];
+  let loadedBytes = 0;
+  let lastPercent = -1;
+  let lastLoggedBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loadedBytes += value.byteLength;
+
+    const percent = totalBytes
+      ? Math.floor((loadedBytes / totalBytes) * 100)
+      : null;
+    const shouldLog = totalBytes
+      ? percent >= lastPercent + 10 || percent === 100
+      : loadedBytes - lastLoggedBytes >= 1024 * 1024;
+
+    if (shouldLog) {
+      lastPercent = percent ?? lastPercent;
+      lastLoggedBytes = loadedBytes;
+      report("download_progress", {
+        loadedBytes,
+        totalBytes,
+        percent,
+      });
+    }
+  }
+
+  report("download_complete", {
+    loadedBytes,
+    totalBytes: totalBytes || loadedBytes,
+    percent: 100,
+  });
+  return concatChunks(chunks, loadedBytes);
+}
+
 // Cached fetch function for model files
-export async function cachedFetch(url) {
+export async function cachedFetch(url, options = {}) {
+  const { onProgress = null, label = null } = options;
   const cache = new ModelCache();
+  const logLabel = cacheLogLabel(url, label);
+  const report = (phase, details = {}) => {
+    if (!onProgress) return;
+    onProgress({
+      phase,
+      label: logLabel,
+      url,
+      ...details,
+    });
+  };
 
   // IndexedDB may be unavailable or out of quota in a mobile WebView. Cache
   // failures must never prevent inference when the network is still usable.
   let cached = null;
   try {
+    report("cache_lookup_start");
     cached = await cache.get(url);
   } catch (error) {
+    report("cache_lookup_failed", { message: error.message });
     console.warn("Model cache read failed; using network:", error);
   }
 
@@ -154,23 +238,35 @@ export async function cachedFetch(url) {
   // IndexedDB entry here avoids downloading the full model on every WebView
   // launch. Entries expire after seven days in ModelCache.get().
   if (cached) {
+    report("cache_hit", {
+      bytes: cached.data?.byteLength ?? cached.data?.size ?? null,
+    });
     return new Response(cached.data, { status: 200 });
   }
+  report("cache_miss");
 
   // Nothing cached (or the entry expired), so fetch and persist it.
+  report("download_start");
   const response = await fetch(url);
+  report("download_headers", {
+    status: response.status,
+    totalBytes: Number(response.headers.get("content-length")) || null,
+  });
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);
   }
 
   // Get the new file data
-  const data = await response.arrayBuffer();
+  const data = await readResponseWithProgress(response, report);
 
   try {
+    report("cache_write_start", { bytes: data.byteLength });
     // URLs are versioned by model name and served as immutable. Hashing the
     // entire ONNX buffer here only adds CPU and peak memory on mobile.
     await cache.set(url, data, null);
+    report("cache_write_done", { bytes: data.byteLength });
   } catch (error) {
+    report("cache_write_failed", { message: error.message });
     console.warn("Model cache write failed; continuing without cache:", error);
   }
 
