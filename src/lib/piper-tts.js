@@ -8,6 +8,12 @@ import {
   debugLog,
 } from "../utils/text-cleaner.js";
 
+function logTextSample(text, maxLength = 260) {
+  const normalized = String(text ?? "").replace(/\r?\n/g, "\\n");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
 // Merge phonemizer output (which may be an array of clause strings) into a single
 // string while preserving clause separators (commas/semicolons/colons) from the
 // original text. This lets the model \"see\" punctuation and pause naturally.
@@ -169,6 +175,40 @@ export class PiperTTS {
         ...details,
       });
     };
+    const runWithEstimatedProgress = async (
+      task,
+      {
+        phase,
+        intervalMs = 500,
+        expectedMs = 12000,
+        maxPercent = 95,
+        details = {},
+      },
+    ) => {
+      const startedAt = Date.now();
+      let lastPercent = 0;
+      const timer = setInterval(() => {
+        const elapsedMs = Date.now() - startedAt;
+        const percent = Math.min(
+          maxPercent,
+          Math.max(1, Math.floor((elapsedMs / expectedMs) * 100)),
+        );
+        if (percent <= lastPercent) return;
+        lastPercent = percent;
+        report(`${phase}_progress`, {
+          ...details,
+          elapsedMs,
+          percent,
+          estimated: true,
+        });
+      }, intervalMs);
+
+      try {
+        return await task();
+      } finally {
+        clearInterval(timer);
+      }
+    };
     try {
       // Use the default JSEP entry point because public/onnx-runtime contains
       // the matching ort-wasm-simd-threaded.jsep.* runtime pair.
@@ -209,15 +249,27 @@ export class PiperTTS {
 
       // Create ONNX session with WASM execution provider
       report("session_create_start", { mode: "wasm" });
-      const session = await ort.InferenceSession.create(modelBuffer, {
-        executionProviders: [
-          {
-            name: "wasm",
-            simd: true,
-          },
-        ],
+      const sessionStartedAt = Date.now();
+      const session = await runWithEstimatedProgress(
+        () =>
+          ort.InferenceSession.create(modelBuffer, {
+            executionProviders: [
+              {
+                name: "wasm",
+                simd: true,
+              },
+            ],
+          }),
+        {
+          phase: "session_create",
+          details: { mode: "wasm" },
+        },
+      );
+      report("session_create_done", {
+        mode: "wasm",
+        elapsedMs: Date.now() - sessionStartedAt,
+        percent: 100,
       });
-      report("session_create_done", { mode: "wasm" });
 
       return new PiperTTS(voiceConfig, session);
     } catch (error) {
@@ -383,23 +435,26 @@ export class PiperTTS {
         try {
           if (this.session && this.voiceConfig) {
             chunkIdx++;
+            const chunkTextSample = logTextSample(text);
+            const chunkLogDetails = () => ({
+              chunkIndex: chunkIdx,
+              textLength: text.length,
+              textSample: chunkTextSample,
+            });
 
             console.info(
               `[CHUNK ${chunkIdx}] Text (${text.length} chars): ${JSON.stringify(text)}`,
             );
-            report("chunk_start", {
-              chunkIndex: chunkIdx,
-              textLength: text.length,
-            });
+            report("chunk_start", chunkLogDetails());
 
             // Convert text to phonemes then to IDs
-            report("phonemize_start", { chunkIndex: chunkIdx });
+            report("phonemize_start", chunkLogDetails());
             const textPhonemes = await this.textToPhonemes(text);
-            report("phonemize_done", { chunkIndex: chunkIdx });
-            report("phoneme_ids_start", { chunkIndex: chunkIdx });
+            report("phonemize_done", chunkLogDetails());
+            report("phoneme_ids_start", chunkLogDetails());
             const phonemeIds = await this.phonemesToIds(textPhonemes);
             report("phoneme_ids_done", {
-              chunkIndex: chunkIdx,
+              ...chunkLogDetails(),
               phonemeIds: phonemeIds.length,
             });
 
@@ -410,19 +465,19 @@ export class PiperTTS {
                 `[CHUNK ${chunkIdx}] Skipped because it has no model-supported phonemes. Text: ${JSON.stringify(skippedText)}`,
               );
               report("chunk_no_audio", {
-                chunkIndex: chunkIdx,
+                ...chunkLogDetails(),
                 phonemeIds: phonemeIds.length,
               });
               continue;
             }
 
             // Prepare tensors for Piper model
-            report("runtime_import_start", { chunkIndex: chunkIdx });
+            report("runtime_import_start", chunkLogDetails());
             const ort = await import("onnxruntime-web");
-            report("runtime_import_done", { chunkIndex: chunkIdx });
+            report("runtime_import_done", chunkLogDetails());
 
             report("tensor_create_start", {
-              chunkIndex: chunkIdx,
+              ...chunkLogDetails(),
               phonemeIds: phonemeIds.length,
             });
             const inputs = {
@@ -454,14 +509,14 @@ export class PiperTTS {
             } else {
               // console.log('⚠️ Model has only 1 speaker - speaker ID ignored');
             }
-            report("tensor_create_done", { chunkIndex: chunkIdx });
+            report("tensor_create_done", chunkLogDetails());
 
             report("inference_start", {
-              chunkIndex: chunkIdx,
+              ...chunkLogDetails(),
               phonemeIds: phonemeIds.length,
             });
             const results = await this.session.run(inputs);
-            report("inference_done", { chunkIndex: chunkIdx });
+            report("inference_done", chunkLogDetails());
 
             // Extract audio data
             const audioOutput = results.output;

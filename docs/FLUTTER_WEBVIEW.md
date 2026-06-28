@@ -26,6 +26,10 @@ The page emits JSON strings through `window.FlutterTTS.postMessage(...)`.
 ```js
 window.NghiTTS.getState();
 window.NghiTTS.loadModel("ngocngan3701");
+window.NghiTTS.loadModel({
+  model: "ngocngan3701",
+  loadId: "load-123",
+});
 window.NghiTTS.synthesize({
   requestId: "request-123",
   text: "Xin chao, day la ban thu giong noi.",
@@ -64,8 +68,12 @@ Cancellation depends on the current phase:
   Base64 chunks are cancelled, while the loaded model is kept. A new job can be
   submitted immediately after the `cancelled` event.
 
-Set `reloadModel: false` to terminate a generating Worker without loading the
-model again. Call `loadModel()` before the next synthesis in that case.
+Set `reloadModel: false` during `generating` for direct playback. The bridge
+keeps the Worker/model warm, emits `cancelled` immediately, ignores stale
+messages from the cancelled request, and holds the next request in the bridge
+until the Worker is idle. This avoids creating a new ONNX session when the user
+switches chapters and prevents cancelled requests from piling up in the Worker
+message queue.
 
 Flutter must discard all collected chunks for a request when it receives its
 `cancelled` event. Audio already playing in Flutter must be stopped separately

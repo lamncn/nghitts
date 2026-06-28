@@ -4,6 +4,12 @@ import { mergeAudioChunksToWav } from "../utils/wav.js";
 
 let tts = null;
 
+function logTextSample(text, maxLength = 260) {
+  const normalized = String(text ?? "").replace(/\r?\n/g, "\\n");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
 function postPhase(status, phase, details = {}) {
   self.postMessage({
     status,
@@ -88,6 +94,7 @@ self.addEventListener("message", async (e) => {
     model,
     requestId,
     deliverToFlutter = false,
+    textIsPrepared = false,
   } = e.data;
 
   // Handle initialization
@@ -110,17 +117,28 @@ self.addEventListener("message", async (e) => {
 
   try {
     const startedAt = Date.now();
+    const requestTextSample = logTextSample(text);
     postPhase("tts_phase", "text_split_start", {
       requestId,
       textLength: text?.length ?? 0,
+      textSample: requestTextSample,
+      textIsPrepared: textIsPrepared === true,
     });
     const streamer = new TextSplitterStream();
-    await streamer.push(text);
+    if (textIsPrepared === true) {
+      const preparedText = typeof text === "string" ? text.trim() : "";
+      if (preparedText) {
+        streamer.chunks.push(preparedText);
+      }
+    } else {
+      await streamer.push(text);
+    }
     streamer.close();
     postPhase("tts_phase", "text_split_done", {
       requestId,
       totalChunks: streamer.chunks.length,
       elapsedMs: Date.now() - startedAt,
+      textSample: requestTextSample,
     });
 
     const speakerId = typeof voice === "number" ? voice : parseInt(voice) || 0;
@@ -128,6 +146,7 @@ self.addEventListener("message", async (e) => {
     postPhase("tts_phase", "stream_create_start", {
       requestId,
       totalChunks: streamer.chunks.length,
+      textSample: requestTextSample,
     });
     const stream = tts.stream(streamer, {
       speakerId,
@@ -145,6 +164,7 @@ self.addEventListener("message", async (e) => {
       requestId,
       totalChunks: streamer.chunks.length,
       elapsedMs: Date.now() - startedAt,
+      textSample: requestTextSample,
     });
     const chunks = [];
     const totalChunks = streamer.chunks.length;
@@ -152,6 +172,7 @@ self.addEventListener("message", async (e) => {
 
     self.postMessage({
       status: "generation_progress",
+      requestId,
       currentChunk: 0,
       totalChunks,
     });
@@ -161,6 +182,7 @@ self.addEventListener("message", async (e) => {
       if (!deliverToFlutter) {
         self.postMessage({
           status: "stream",
+          requestId,
           chunk: {
             audio: audio.toBlob(),
             text,
@@ -173,9 +195,12 @@ self.addEventListener("message", async (e) => {
         currentChunk,
         totalChunks,
         elapsedMs: Date.now() - startedAt,
+        textLength: text?.length ?? 0,
+        textSample: logTextSample(text),
       });
       self.postMessage({
         status: "generation_progress",
+        requestId,
         currentChunk,
         totalChunks,
       });
@@ -186,6 +211,7 @@ self.addEventListener("message", async (e) => {
       totalChunks,
       audioChunks: chunks.length,
       elapsedMs: Date.now() - startedAt,
+      textSample: requestTextSample,
     });
     const audio = chunks.length > 0 ? mergeAudioChunksToWav(chunks) : null;
     postPhase("tts_phase", "merge_audio_done", {
@@ -195,6 +221,7 @@ self.addEventListener("message", async (e) => {
       elapsedMs: Date.now() - startedAt,
       hasAudio: Boolean(audio),
       bytes: audio?.size ?? null,
+      textSample: requestTextSample,
     });
     self.postMessage({ status: "complete", audio, requestId });
   } catch (error) {

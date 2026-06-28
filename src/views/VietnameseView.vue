@@ -37,12 +37,13 @@ const availableModels = ref([]);
 const selectedModel = ref("None");
 const modelsLoading = ref(false);
 const loadingProgress = ref(0);
+const loadingPhase = ref("");
 const embedMode =
   new URLSearchParams(window.location.search).get("embed") === "1";
 
-// Flutter WebView bridge state. Only one synthesis request is accepted at a time
-// because the current worker protocol does not attach IDs to generated messages.
-const BRIDGE_VERSION = 3;
+// Flutter WebView bridge state. Requests are tagged so stale worker messages can
+// be ignored after a direct-play chapter switch.
+const BRIDGE_VERSION = 4;
 const BRIDGE_AUDIO_CHUNK_BYTES = 64 * 1024;
 const BRIDGE_ACK_TIMEOUT_MS = 30_000;
 const bridgeEventLog = [];
@@ -50,6 +51,16 @@ let bridgeApi = null;
 let pendingBridgeRequest = null;
 let activeBridgeTransfer = null;
 let bridgeOperationEpoch = 0;
+let bridgeLoadSerial = 0;
+let activeBridgeLoadId = null;
+let bridgeWorkerBusyWithCancelledRequest = false;
+const cancelledBridgeRequestIds = new Set();
+
+function logTextSample(value, maxLength = 260) {
+  const normalized = String(value ?? "").replace(/\r?\n/g, "\\n");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}...`;
+}
 
 // Computed properties
 const processed = computed(() => {
@@ -60,6 +71,44 @@ const processed = computed(() => {
     lastGeneration.value.voice === selectedVoice.value
   );
 });
+
+const loadingPhaseLabel = computed(() =>
+  formatLoadingPhase(loadingPhase.value),
+);
+
+function formatLoadingPhase(phase) {
+  switch (phase) {
+    case "worker_create":
+      return "worker_create";
+    case "init_start":
+      return "init_start";
+    case "runtime_import_start":
+    case "runtime_import_done":
+      return "runtime_import";
+    case "cache_module_import_start":
+    case "cache_module_import_done":
+      return "cache_module_import";
+    case "wasm_paths_set":
+      return "wasm_paths_set";
+    case "model_fetch_start":
+    case "model_fetch_done":
+      return "model_fetch";
+    case "model_decode_start":
+    case "model_decode_done":
+      return "model_decode";
+    case "session_create_start":
+    case "session_create_progress":
+    case "session_create_done":
+      return "session_create";
+    case "init_done":
+      return "init_done";
+    default:
+      if (!phase) return "";
+      if (phase.startsWith("model_file_")) return "model_file";
+      if (phase.startsWith("config_file_")) return "config_file";
+      return phase;
+  }
+}
 
 // Methods
 const setSpeed = (newSpeed) => {
@@ -135,6 +184,53 @@ function bridgeError(code, message, requestId = null) {
     requestId,
     model: selectedModel.value === "None" ? null : selectedModel.value,
   });
+}
+
+function nextBridgeLoadId() {
+  bridgeLoadSerial += 1;
+  return `load-${Date.now()}-${bridgeLoadSerial}`;
+}
+
+function normalizeBridgeLoadOptions(input) {
+  if (input && typeof input === "object") {
+    return {
+      name: String(input.model || input.name || "").trim(),
+      loadId: input.loadId == null ? nextBridgeLoadId() : String(input.loadId),
+    };
+  }
+  return {
+    name: String(input || "").trim(),
+    loadId: nextBridgeLoadId(),
+  };
+}
+
+function isCurrentBridgeRequest(requestId) {
+  if (requestId == null) return Boolean(pendingBridgeRequest);
+  return pendingBridgeRequest?.requestId === String(requestId);
+}
+
+function ignoreStaleWorkerRequest(data) {
+  const requestId = data?.requestId == null ? null : String(data.requestId);
+  if (isCurrentBridgeRequest(requestId)) return false;
+  if (requestId) cancelledBridgeRequestIds.delete(requestId);
+  return true;
+}
+
+function dispatchPendingBridgeRequest() {
+  if (bridgeWorkerBusyWithCancelledRequest) return;
+  if (!worker.value || !pendingBridgeRequest?.params) return;
+  const params = pendingBridgeRequest.params;
+  pendingBridgeRequest.params = null;
+  worker.value.postMessage(params);
+}
+
+function finishCancelledWorkerRequest(data) {
+  if (ignoreStaleWorkerRequest(data)) {
+    bridgeWorkerBusyWithCancelledRequest = false;
+    dispatchPendingBridgeRequest();
+    return true;
+  }
+  return false;
 }
 
 function bytesToBase64(bytes) {
@@ -213,6 +309,7 @@ async function sendAudioToFlutter(audioBlob, request) {
       sizeBytes,
       totalChunks,
       fileName: `tts-${request.requestId}.wav`,
+      textSample: request.textSample,
     });
 
     for (let index = 0; index < totalChunks; index += 1) {
@@ -254,6 +351,7 @@ async function sendAudioToFlutter(audioBlob, request) {
       sizeBytes,
       totalChunks,
       fileName: `tts-${request.requestId}.wav`,
+      textSample: request.textSample,
     });
   } catch (err) {
     if (wasCancelled()) return;
@@ -271,7 +369,7 @@ async function sendAudioToFlutter(audioBlob, request) {
 }
 
 function loadBridgeModel(modelName) {
-  const name = String(modelName || "").trim();
+  const { name, loadId } = normalizeBridgeLoadOptions(modelName);
   if (!name) {
     bridgeError("INVALID_MODEL", "Model name is required.");
     return { accepted: false, code: "INVALID_MODEL" };
@@ -292,14 +390,16 @@ function loadBridgeModel(modelName) {
     postBridgeEvent({
       type: "model_ready",
       model: name,
+      loadId,
       voices: voices.value || [],
     });
-    return { accepted: true, model: name, alreadyLoaded: true };
+    return { accepted: true, model: name, loadId, alreadyLoaded: true };
   }
 
   selectedModel.value = name;
-  restartWorker(name);
-  return { accepted: true, model: name, alreadyLoaded: false };
+  activeBridgeLoadId = loadId;
+  restartWorker(name, loadId);
+  return { accepted: true, model: name, loadId, alreadyLoaded: false };
 }
 
 function startSynthesisJob({
@@ -310,7 +410,9 @@ function startSynthesisJob({
   deliverToFlutter,
   autoPlay,
   ackAudioChunks = false,
+  textIsPrepared = false,
 }) {
+  cancelledBridgeRequestIds.delete(requestId);
   text.value = requestedText;
   speed.value = normalizedSpeed;
   selectedVoice.value = normalizedVoice;
@@ -327,6 +429,7 @@ function startSynthesisJob({
     speed: normalizedSpeed,
     requestId,
     deliverToFlutter,
+    textIsPrepared,
   };
   lastGeneration.value = params;
   pendingBridgeRequest = {
@@ -334,6 +437,9 @@ function startSynthesisJob({
     model: selectedModel.value,
     deliverToFlutter,
     ackAudioChunks,
+    textIsPrepared,
+    textSample: logTextSample(requestedText),
+    params,
   };
 
   postBridgeEvent({
@@ -343,8 +449,19 @@ function startSynthesisJob({
     voice: normalizedVoice,
     speed: normalizedSpeed,
     client: deliverToFlutter ? "flutter" : "web",
+    textLength: requestedText.length,
+    textSample: pendingBridgeRequest.textSample,
   });
-  worker.value.postMessage(params);
+  if (bridgeWorkerBusyWithCancelledRequest) {
+    postBridgeEvent({
+      type: "request_queued",
+      requestId,
+      model: selectedModel.value,
+      textLength: requestedText.length,
+      textSample: pendingBridgeRequest.textSample,
+    });
+  }
+  dispatchPendingBridgeRequest();
 }
 
 function synthesizeFromBridge(options = {}) {
@@ -395,6 +512,7 @@ function synthesizeFromBridge(options = {}) {
     deliverToFlutter: true,
     autoPlay: false,
     ackAudioChunks: options.ackAudioChunks === true,
+    textIsPrepared: options.textIsPrepared === true,
   });
 
   return { accepted: true, requestId, model: selectedModel.value };
@@ -447,18 +565,27 @@ function stopBridge(rawOptions = {}) {
   error.value = null;
 
   if (phase === "generating") {
-    // ONNX Runtime does not provide a reliable abort for an in-flight
-    // session.run(). Terminating the Worker is the immediate cancellation
-    // boundary and also prevents old messages reaching the replacement Worker.
-    if (worker.value) {
-      if (worker.value._progressInterval) {
-        clearInterval(worker.value._progressInterval);
+    if (shouldReloadModel) {
+      // ONNX Runtime does not provide a reliable abort for an in-flight
+      // session.run(). Terminating the Worker is the immediate hard reset
+      // boundary when the caller explicitly asks to reload the model.
+      if (worker.value) {
+        if (worker.value._progressInterval) {
+          clearInterval(worker.value._progressInterval);
+        }
+        worker.value.terminate();
+        worker.value = null;
       }
-      worker.value.terminate();
-      worker.value = null;
+      voices.value = null;
+      status.value = "loading";
+    } else {
+      // Keep the loaded model/session warm for direct playback. The worker may
+      // finish the old session.run() in the background; requestId filtering
+      // below ignores those stale messages while a new request waits in the
+      // bridge until the worker is idle.
+      bridgeWorkerBusyWithCancelledRequest = Boolean(worker.value);
+      status.value = worker.value ? "ready" : "idle";
     }
-    voices.value = null;
-    status.value = shouldReloadModel ? "loading" : "idle";
   } else {
     // Audio has already been generated. Only stop the Flutter transfer and keep
     // the loaded model so a new request can start immediately.
@@ -472,10 +599,14 @@ function stopBridge(rawOptions = {}) {
     phase,
     reloadingModel: shouldReloadModel,
     readyForNextRequest: phase === "transferring",
+    queuesNextRequest: phase === "generating" && !shouldReloadModel,
   });
+  cancelledBridgeRequestIds.add(activeRequest.requestId);
 
   if (shouldReloadModel && model) {
-    restartWorker(model);
+    const loadId = nextBridgeLoadId();
+    activeBridgeLoadId = loadId;
+    restartWorker(model, loadId);
   }
 
   return {
@@ -509,7 +640,8 @@ function installFlutterBridge() {
   });
 }
 
-const restartWorker = (modelName = null) => {
+const restartWorker = (modelName = null, loadId = null) => {
+  bridgeWorkerBusyWithCancelledRequest = false;
   if (worker.value) {
     if (worker.value._progressInterval) {
       clearInterval(worker.value._progressInterval);
@@ -520,6 +652,7 @@ const restartWorker = (modelName = null) => {
   // Reset all audio and UI state
   status.value = "loading";
   loadingProgress.value = 0;
+  loadingPhase.value = "worker_create";
   voices.value = null;
   chunks.value = [];
   result.value = null;
@@ -543,21 +676,28 @@ const restartWorker = (modelName = null) => {
     },
   );
   worker.value = nextWorker;
+  nextWorker._bridgeLoadId = loadId || nextBridgeLoadId();
 
   nextWorker.addEventListener("message", (event) => {
-    if (worker.value === nextWorker) onMessageReceived(event);
+    if (worker.value === nextWorker) onMessageReceived(event, nextWorker);
   });
   nextWorker.addEventListener("error", (event) => {
-    if (worker.value === nextWorker) onErrorReceived(event);
+    if (worker.value === nextWorker) onErrorReceived(event, nextWorker);
   });
 
   const modelToLoad = modelName || selectedModel.value;
+  activeBridgeLoadId = nextWorker._bridgeLoadId;
   postBridgeEvent({
     type: "model_phase",
     phase: "worker_create_done",
     model: modelToLoad,
+    loadId: nextWorker._bridgeLoadId,
   });
-  postBridgeEvent({ type: "model_loading", model: modelToLoad });
+  postBridgeEvent({
+    type: "model_loading",
+    model: modelToLoad,
+    loadId: nextWorker._bridgeLoadId,
+  });
   nextWorker.postMessage({ type: "init", model: modelToLoad });
 
   nextWorker._progressInterval = progressInterval;
@@ -699,6 +839,7 @@ const handleModelChange = (modelName) => {
         worker.value = null;
       }
       status.value = "loading";
+      loadingPhase.value = "";
       voices.value = null;
       chunks.value = [];
       result.value = null;
@@ -712,12 +853,72 @@ const handleModelChange = (modelName) => {
 };
 
 // Worker message handlers
-const onMessageReceived = ({ data }) => {
+const applyModelLoadProgress = (data) => {
+  if (data.phase) {
+    loadingPhase.value = data.phase;
+  }
+
+  const phaseProgress = {
+    init_start: 2,
+    runtime_import_start: 8,
+    runtime_import_done: 12,
+    cache_module_import_start: 14,
+    cache_module_import_done: 16,
+    wasm_paths_set: 18,
+    model_fetch_start: 20,
+    model_fetch_done: 55,
+    model_decode_start: 56,
+    model_decode_done: 60,
+    init_done: 98,
+  }[data.phase];
+
+  if (Number.isFinite(phaseProgress)) {
+    loadingProgress.value = Math.max(loadingProgress.value, phaseProgress);
+  }
+
+  if (
+    (data.phase?.startsWith("model_file_") ||
+      data.phase?.startsWith("config_file_")) &&
+    Number.isFinite(Number(data.percent))
+  ) {
+    const percent = Math.min(100, Math.max(0, Number(data.percent)));
+    loadingProgress.value = Math.max(
+      loadingProgress.value,
+      Math.round(20 + percent * 0.35),
+    );
+  }
+
+  if (data.phase === "session_create_start") {
+    loadingProgress.value = Math.max(loadingProgress.value, 60);
+    return;
+  }
+
+  if (
+    data.phase === "session_create_progress" &&
+    Number.isFinite(Number(data.percent))
+  ) {
+    const percent = Math.min(95, Math.max(0, Number(data.percent)));
+    loadingProgress.value = Math.max(
+      loadingProgress.value,
+      Math.round(60 + percent * 0.35),
+    );
+    return;
+  }
+
+  if (data.phase === "session_create_done") {
+    loadingProgress.value = Math.max(loadingProgress.value, 96);
+  }
+};
+
+const onMessageReceived = ({ data }, sourceWorker = null) => {
+  const loadId = sourceWorker?._bridgeLoadId || activeBridgeLoadId;
   switch (data.status) {
     case "load_progress":
+      applyModelLoadProgress(data);
       postBridgeEvent({
         type: "model_phase",
         model: selectedModel.value,
+        loadId,
         ...data,
       });
       break;
@@ -726,24 +927,33 @@ const onMessageReceived = ({ data }) => {
         clearInterval(worker.value._progressInterval);
       }
       loadingProgress.value = 100;
+      loadingPhase.value = "init_done";
       status.value = "ready";
       voices.value = data.voices;
       postBridgeEvent({
         type: "model_ready",
         model: selectedModel.value,
+        loadId,
         voices: data.voices || [],
       });
+      if (activeBridgeLoadId === loadId) {
+        activeBridgeLoadId = null;
+      }
       setTimeout(() => {
         loadingProgress.value = 0;
+        loadingPhase.value = "";
       }, 300);
       break;
     case "error":
+      if (data.requestId != null && finishCancelledWorkerRequest(data)) return;
       if (worker.value?._progressInterval) {
         clearInterval(worker.value._progressInterval);
       }
       loadingProgress.value = 0;
+      loadingPhase.value = "";
       error.value = data.data;
       if (pendingBridgeRequest) {
+        if (ignoreStaleWorkerRequest(data)) return;
         // A failed OrtRun does not unload the session. Keep the worker ready so
         // the next chapter can continue instead of cascading MODEL_NOT_READY.
         status.value = worker.value ? "ready" : "error";
@@ -759,11 +969,13 @@ const onMessageReceived = ({ data }) => {
       }
       break;
     case "stream":
+      if (ignoreStaleWorkerRequest(data)) return;
       if (!pendingBridgeRequest?.deliverToFlutter) {
         chunks.value = [...chunks.value, data.chunk];
       }
       break;
     case "tts_phase":
+      if (ignoreStaleWorkerRequest(data)) return;
       if (pendingBridgeRequest || data.requestId) {
         postBridgeEvent({
           type: "tts_phase",
@@ -773,16 +985,19 @@ const onMessageReceived = ({ data }) => {
       }
       break;
     case "generation_progress":
+      if (ignoreStaleWorkerRequest(data)) return;
       if (pendingBridgeRequest) {
         postBridgeEvent({
           type: "generation_progress",
           requestId: pendingBridgeRequest.requestId,
           currentChunk: data.currentChunk,
           totalChunks: data.totalChunks,
+          textSample: pendingBridgeRequest.textSample,
         });
       }
       break;
     case "complete":
+      if (finishCancelledWorkerRequest(data)) return;
       status.value = "ready";
       {
         const request = pendingBridgeRequest;
@@ -854,6 +1069,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   bridgeOperationEpoch += 1;
+  bridgeWorkerBusyWithCancelledRequest = false;
   activeBridgeTransfer = null;
   if (worker.value) {
     if (worker.value._progressInterval) {
@@ -941,25 +1157,30 @@ onUnmounted(() => {
           >
             Please select a model to start using TTS
           </div>
-          <div
-            v-else-if="!voices && status === 'loading'"
-            class="w-full flex items-center gap-3"
-          >
-            <span
-              class="text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap"
-              >Loading model</span
-            >
-            <div
-              class="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-6 overflow-hidden"
-            >
-              <div
-                class="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300 ease-out flex items-center justify-end pr-2"
-                :style="{ width: `${loadingProgress}%` }"
+          <div v-else-if="!voices && status === 'loading'" class="w-full">
+            <div class="flex items-center gap-3">
+              <span
+                class="text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap"
+                >Loading model</span
               >
-                <span class="text-white text-xs font-semibold"
-                  >{{ Math.round(loadingProgress) }}%</span
+              <div
+                class="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-6 overflow-hidden"
+              >
+                <div
+                  class="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300 ease-out flex items-center justify-end pr-2"
+                  :style="{ width: `${loadingProgress}%` }"
                 >
+                  <span class="text-white text-xs font-semibold"
+                    >{{ Math.round(loadingProgress) }}%</span
+                  >
+                </div>
               </div>
+            </div>
+            <div
+              v-if="loadingPhaseLabel"
+              class="mt-1 text-xs text-muted-foreground truncate"
+            >
+              {{ loadingPhaseLabel }}
             </div>
           </div>
         </div>
